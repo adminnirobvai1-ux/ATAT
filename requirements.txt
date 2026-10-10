@@ -1,11 +1,2 @@
-selenium
-webdriver-manager
-psutil
-requests
 pyTelegramBotAPI
-python-telegram-bot
-aiohttp
-beautifulsoup4
-lxml
-urllib3
-websockets
+requests
