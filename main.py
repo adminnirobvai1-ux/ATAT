@@ -1,6 +1,5 @@
 import requests
 import time
-import base64
 from datetime import datetime, timedelta, timezone
 import sys
 
@@ -8,12 +7,6 @@ import sys
 BOT_TOKEN = "8864547814:AAETcz_4N_l23cniISqg01RLCkq_lhRC9K4"
 CHAT_ID = "8707571669"
 API_URL = "https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json"
-
-# ================= গিটহাব (GitHub) কনফিগারেশন =================
-GH_TOKEN = "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"
-GH_OWNER = "poke999craft-del"
-GH_REPO = "DRX"
-MAX_GH_FILE_SIZE = 1000000 
 
 # ================= টেলিগ্রাম সেন্ডার =================
 def send_telegram_message(text):
@@ -28,71 +21,10 @@ def send_telegram_message(text):
     except Exception as e:
         print(f"[Telegram Error] মেসেজ পাঠানো সম্ভব হয়নি: {e}")
 
-# ================= গিটহাবে ডাটা সেভ করার ফাংশন =================
-def save_data_to_github(issue_number, result_number, status):
-    bd_timezone = timezone(timedelta(hours=6))
-    time_str = datetime.now(bd_timezone).strftime("%I:%M%p").replace("AM", "A").replace("PM", "P")
-    issue_last4 = str(issue_number)[-4:]
-    new_line = f"{time_str}-{issue_last4}-{result_number}-{status.upper()}"
-    
-    headers = {
-        "Authorization": f"token {GH_TOKEN}",
-        "Accept": "application/vnd.github.v3+json"
-    }
-
-    for i in range(1, 11):
-        file_path = f"data{i}.txt"
-        url = f"https://api.github.com/repos/{GH_OWNER}/{GH_REPO}/contents/{file_path}"
-        
-        try:
-            response = requests.get(url, headers=headers)
-            
-            if response.status_code == 200:
-                file_data = response.json()
-                sha = file_data['sha']
-                size = file_data['size']
-                
-                if size >= MAX_GH_FILE_SIZE and i < 10:
-                    continue
-                
-                content_b64 = file_data.get('content', '')
-                existing_content = base64.b64decode(content_b64).decode('utf-8') if content_b64 else ""
-                
-                if existing_content and not existing_content.endswith('\n'):
-                    new_content = existing_content + '\n' + new_line + '\n'
-                else:
-                    new_content = existing_content + new_line + '\n'
-                
-                update_payload = {
-                    "message": f"Auto-update {file_path}",
-                    "content": base64.b64encode(new_content.encode('utf-8')).decode('utf-8'),
-                    "sha": sha
-                }
-                
-                put_res = requests.put(url, headers=headers, json=update_payload)
-                if put_res.status_code in [200, 201]:
-                    print(f"[GitHub] Data saved successfully to {file_path}: {new_line}")
-                break
-
-            elif response.status_code == 404:
-                new_content = new_line + '\n'
-                create_payload = {
-                    "message": f"Create {file_path}",
-                    "content": base64.b64encode(new_content.encode('utf-8')).decode('utf-8')
-                }
-                
-                put_res = requests.put(url, headers=headers, json=create_payload)
-                if put_res.status_code in [200, 201]:
-                    print(f"[GitHub] Created {file_path} and saved data: {new_line}")
-                break
-                
-        except Exception as e:
-            print(f"[GitHub Request Error] {e}")
-            break
-
-# ================= প্রেডিকশন ইঞ্জিন =================
+# ================= জাভাস্ক্রিপ্ট ভিত্তিক প্রেডিকশন ইঞ্জিন =================
 
 def resolve_colors(number, raw_color_str=""):
+    """ড্র হিস্ট্রি থেকে নাম্বার ভিত্তিক কালার নির্ধারণ"""
     if number == 0:
         return ["RED", "VIOLET"]
     if number == 5:
@@ -113,6 +45,7 @@ def resolve_colors(number, raw_color_str=""):
     return colors if colors else ["RED"]
 
 def normalize_draw_record(raw_item):
+    """API রেসপন্স ডাটা স্ট্যান্ডার্ডাইজেশন"""
     try:
         num = int(raw_item.get("number", raw_item.get("result", 0)))
     except (ValueError, TypeError):
@@ -131,12 +64,14 @@ def normalize_draw_record(raw_item):
     }
 
 def compute_next_period(current_issue):
+    """পরবর্তী পিরিয়ড নাম্বার ক্যালকুলেটর"""
     try:
         return str(int(current_issue) + 1)
     except (ValueError, TypeError):
         return str(int(time.time()))
 
 def analyze_dynamic_history(sizes_history):
+    """ডায়নামিক এন-গ্রাম প্যাটার্ন অ্যানালাইসিস (১ থেকে ৬ লেভেল ডেপথ)"""
     best_depth = 0
     big_probability = 0.0
     small_probability = 0.0
@@ -149,6 +84,7 @@ def analyze_dynamic_history(sizes_history):
         big_matches = 0
         small_matches = 0
 
+        # অতীতের হিস্ট্রিতে একই সিকোয়েন্স স্ক্যান করা
         for i in range(1, len(sizes_history) - depth):
             past_sequence = "-".join(sizes_history[i:i + depth])
             if current_sequence == past_sequence:
@@ -172,6 +108,7 @@ def analyze_dynamic_history(sizes_history):
     }
 
 def execute_prediction_model(history, target_issue):
+    """মূল ডিসিশন মেকিং মডেল"""
     short_issue = target_issue[-5:] if len(target_issue) >= 5 else target_issue
 
     if not isinstance(history, list) or len(history) < 5:
@@ -188,12 +125,15 @@ def execute_prediction_model(history, target_issue):
     sizes = [item["bigSmall"] for item in history]
     last_size = sizes[0]
 
+    # ১. ডায়নামিক হিস্ট্রি অ্যানালাইসিস
     dynamic_analysis = analyze_dynamic_history(sizes)
 
+    # ২. কারেন্ট স্ট্রিক (টানা আসা রেজাল্ট) চেক
     streak_count = 1
     while streak_count < len(sizes) and sizes[streak_count] == last_size:
         streak_count += 1
 
+    # ৩. প্যাটার্ন ও ডিসিশন সিলেকশন
     if dynamic_analysis["bestDepth"] >= 2 and abs(dynamic_analysis["bigProbability"] - dynamic_analysis["smallProbability"]) >= 20:
         predicted_size = "BIG" if dynamic_analysis["bigProbability"] > dynamic_analysis["smallProbability"] else "SMALL"
         pattern_name = f"Dynamic AI Match (Depth: {dynamic_analysis['bestDepth']})"
@@ -203,6 +143,7 @@ def execute_prediction_model(history, target_issue):
         pattern_name = f"Strong Momentum (x{streak_count})"
         confidence = 94.0
     else:
+        # স্ট্যাটিস্টিক্যাল ব্যালেন্সিং (Mean Reversion)
         last10_sizes = sizes[:10]
         big_count = last10_sizes.count("BIG")
 
@@ -219,6 +160,7 @@ def execute_prediction_model(history, target_issue):
             pattern_name = "Market Oscillation"
             confidence = 88.0
 
+    # কালার এবং নাম্বার ফিল্টারিং
     recent_colors = [h["colors"][0] for h in history[:5]]
     is_red_dominant = recent_colors.count("RED") > 2
 
@@ -249,9 +191,9 @@ def fetch_history_records():
     payload = {"pageNumber": 1, "pageSize": 50}
     
     try:
-        res = requests.post(API_URL, json=payload, headers=headers, timeout=5)
+        res = requests.post(API_URL, json=payload, headers=headers, timeout=4)
         if res.status_code != 200:
-            res = requests.get(API_URL, headers=headers, timeout=5)
+            res = requests.get(API_URL, headers=headers, timeout=4)
             
         data = res.json()
         
@@ -268,11 +210,11 @@ def fetch_history_records():
         raw_list = extract_list(data)
         if raw_list:
             return [normalize_draw_record(item) for item in raw_list]
-    except Exception as e:
-        print(f"[API Fetch Error] {e}")
+    except Exception:
+        pass
     return []
 
-# ================= মেইন রানার =================
+# ================= মেইন রানার (কন্টিনিউয়াস রিট্রাই ইঞ্জিন) =================
 def main():
     start_time = datetime.now()
     last_hour_notified = 0
@@ -281,11 +223,12 @@ def main():
     target_predicted_issue = None
     pending_prediction = None
     
-    print("\n[+] Dynamic AI WinGo 30s Runner Started Successfully...\n")
+    print("\n[+] WinGo 30s Dynamic Engine Started (Scanning every 1s)...")
     send_telegram_message("WinGo 30s Dynamic Engine Started!")
 
     while True:
         try:
+            # প্রতি সেকেন্ডে লাইভ ড্র চেক
             history = fetch_history_records()
             
             if history:
@@ -293,7 +236,7 @@ def main():
                 curr_issue = latest_draw["issueNumber"]
                 curr_num = latest_draw["number"]
                 
-                # ১. টার্গেট করা পিরিয়ডের ড্র শেষ হলে রেজাল্ট যাচাই
+                # ১. টার্গেট করা ড্র শেষ হয়েছে কিনা যাচাই
                 if target_predicted_issue and curr_issue == target_predicted_issue:
                     bd_timezone = timezone(timedelta(hours=6))
                     current_time = datetime.now(bd_timezone).strftime("%I:%M:%S %p")
@@ -303,15 +246,14 @@ def main():
                     
                     status = "win" if (actual_is_big == predicted_is_big) else "loss"
                     
-                    # টেলিগ্রাম মেসেজ
+                    # টেলিগ্রামে ফলাফল পাঠানো
                     message = f"{current_time} / {curr_issue},{curr_num} / {status}"
                     send_telegram_message(message)
                     
-                    # গিটহাবে সেভ
-                    save_data_to_github(curr_issue, curr_num, status)
-                    target_predicted_issue = None 
+                    # টার্গেট সম্পন্ন হওয়ায় রিসেট
+                    target_predicted_issue = None
 
-                # ২. নতুন পিরিয়ড এলে প্রেডিকশন সেট করা
+                # ২. নতুন পিরিয়ড এলে পরবর্তী ড্রয়ের জন্য প্রেডিকশন তৈরি
                 if curr_issue != last_processed_issue:
                     last_processed_issue = curr_issue
                     
@@ -321,9 +263,9 @@ def main():
                     pending_prediction = pred
                     target_predicted_issue = next_issue
                     
-                    print(f"[*] Target Issue: {next_issue} | Prediction: {pred['predictedSize']} ({pred['predictedColor']}) | Pattern: {pred['patternName']} ({pred['confidenceScore']}%)")
+                    print(f"[*] New Target: {next_issue} | Predict: {pred['predictedSize']} ({pred['predictedColor']}) | Pattern: {pred['patternName']} ({pred['confidenceScore']}%)")
 
-            # আপটাইম চেক (প্রতি ঘণ্টা)
+            # আপটাইম নোটিফিকেশন (প্রতি ১ ঘণ্টা পর পর)
             uptime = datetime.now() - start_time
             hours_passed = int(uptime.total_seconds() // 3600)
             if hours_passed > last_hour_notified:
@@ -331,10 +273,11 @@ def main():
                 last_hour_notified = hours_passed
 
         except Exception as e:
-            print(f"Error in main loop: {e}")
+            print(f"[Main Loop Error] {e}")
 
+        # প্রতি ১ সেকেন্ড পরপর রিট্রাই/চেক
         time.sleep(1)
 
 if __name__ == "__main__":
     main()
-                    
+        
