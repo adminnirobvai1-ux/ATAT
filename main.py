@@ -15,9 +15,9 @@ from telegram.ext import (
 )
 
 # আপনার বটের টোকেন
-BOT_TOKEN = "8864547814:AAEvZ1S3oSQIbtoUg7p7FE5XjMXnczYJdfg"
+BOT_TOKEN = "8864547814:AAETisKJt1oten1ZhyQt1z20w8Ho3J2UAg8"
 
-# ডিরেক্টরি পাথ সেটআপ
+# ডিরেক্টরি পাথ
 DATA_DIR = "/app" if os.path.exists("/app") else "."
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -41,7 +41,7 @@ def setup_db():
     conn.commit()
     conn.close()
 
-# জাভাস্ক্রিপ্ট রানার তৈরি করা
+# জাভাস্ক্রিপ্ট রানার ফাইল তৈরি
 def create_js_runner():
     runner_code = """
 const logic = require('./logic.js');
@@ -56,7 +56,7 @@ if (typeof logic.getMarketPrediction === 'function') {
     with open(RUNNER_PATH, "w", encoding="utf-8") as f:
         f.write(runner_code)
 
-# Node.js দিয়ে JS কোড রান করানো
+# Node.js দিয়ে JS কোড এক্সিকিউট করা
 def run_js_prediction():
     if not os.path.exists(LOGIC_PATH):
         return None
@@ -77,7 +77,7 @@ def run_js_prediction():
         logger.error(f"Execution Error: {e}")
         return None
 
-# ব্যাকগ্রাউন্ড জব: ২৪/৭ মার্কেট চেক করবে
+# ব্যাকগ্রাউন্ড মার্কেট মনিটর জব
 async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
     try:
         data = run_js_prediction()
@@ -108,7 +108,7 @@ async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
             )
             conn.commit()
 
-        # নতুন প্রেডিকশন সেভ
+        # নতুন প্রেডিকশন এন্ট্রি
         c.execute("SELECT issue_number FROM history WHERE issue_number=?", (next_issue,))
         if not c.fetchone():
             c.execute(
@@ -121,7 +121,7 @@ async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Background Job Error: {e}")
 
-# স্ট্যাটিস্টিক্স ফাংশন
+# ব্যাকটেস্ট স্ট্যাটস
 def get_stats(target_date=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -172,7 +172,7 @@ def get_stats(target_date=None):
         f"Highest Consecutive Losses: `{max_loss_streak}` times"
     )
 
-# কমান্ড হ্যান্ডলার
+# /start হ্যান্ডলার
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🎯 Current Prediction", callback_data="current_pred")],
@@ -228,7 +228,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await query.edit_message_text(text="🤖 *Main Menu*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-# তারিখ চেক কমান্ড
+# /date কমান্ড
 async def check_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("⚠️ Please provide a date. Example: `/date 2026-10-10`", parse_mode="Markdown")
@@ -237,7 +237,7 @@ async def check_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = get_stats(target_date=target_date)
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-# JS ফাইল আপলোড হ্যান্ডলার
+# JS ফাইল হ্যান্ডলার
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     if doc.file_name and doc.file_name.endswith(".js"):
@@ -253,7 +253,7 @@ def main():
 
     if not os.path.exists(LOGIC_PATH):
         with open(LOGIC_PATH, "w", encoding="utf-8") as f:
-            f.write("// Default logic placeholder\nmodule.exports = { getMarketPrediction: async () => ({}) };")
+            f.write("// Default logic\nmodule.exports = { getMarketPrediction: async () => ({}) };")
 
     app = Application.builder().token(BOT_TOKEN).build()
 
@@ -262,13 +262,12 @@ def main():
     app.add_handler(CallbackQueryHandler(button))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
-    # Job Queue কনফিগারেশন
     if app.job_queue:
         app.job_queue.run_repeating(check_market_job, interval=10, first=1)
     else:
-        logger.warning("JobQueue is not initialized! Ensure python-telegram-bot[job-queue] is installed.")
+        logger.warning("JobQueue is not initialized! Check python-telegram-bot[job-queue]")
 
-    print(f"Bot is starting. Data directory: {DATA_DIR}")
+    print(f"Bot started successfully. Data dir: {DATA_DIR}")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
