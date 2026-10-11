@@ -14,11 +14,10 @@ from telegram.ext import (
     filters,
 )
 
-# আপনার বটের টোকেন এবং এডমিন আইডি
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8864547814:AAEvZ1S3oSQIbtoUg7p7FE5XjMXnczYJdfg")
-ADMIN_ID = 8707571669  # আপনার টেলিগ্রাম নিউমেরিক ইউজার আইডি এখানে দিন
+# আপনার বটের টোকেন
+BOT_TOKEN = "8864547814:AAEvZ1S3oSQIbtoUg7p7FE5XjMXnczYJdfg"
 
-# Railway এর জন্য Persistent Volume ডিরেক্টরি সেটআপ
+# ডিরেক্টরি পাথ সেটআপ
 DATA_DIR = "/app" if os.path.exists("/app") else "."
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -46,9 +45,13 @@ def setup_db():
 def create_js_runner():
     runner_code = """
 const logic = require('./logic.js');
-logic.getMarketPrediction('30s')
-    .then(res => console.log(JSON.stringify(res)))
-    .catch(err => { console.error(err); process.exit(1); });
+if (typeof logic.getMarketPrediction === 'function') {
+    logic.getMarketPrediction('30s')
+        .then(res => console.log(JSON.stringify(res)))
+        .catch(err => { console.error(err); process.exit(1); });
+} else {
+    console.log(JSON.stringify({}));
+}
 """
     with open(RUNNER_PATH, "w", encoding="utf-8") as f:
         f.write(runner_code)
@@ -65,7 +68,7 @@ def run_js_prediction():
             text=True,
             timeout=15,
         )
-        if result.returncode == 0:
+        if result.returncode == 0 and result.stdout.strip():
             return json.loads(result.stdout)
         else:
             logger.error(f"JS Error: {result.stderr}")
@@ -81,19 +84,21 @@ async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
         if not data or "recentContext" not in data or "target" not in data:
             return
 
-        recent_issue = data["recentContext"]["lastIssueNumber"]
-        actual_size = data["recentContext"]["lastDrawnSize"]
-        next_issue = data["target"]["issueNumber"]
-        predicted_size = data["prediction"]["size"]
+        recent_issue = data.get("recentContext", {}).get("lastIssueNumber")
+        actual_size = data.get("recentContext", {}).get("lastDrawnSize")
+        next_issue = data.get("target", {}).get("issueNumber")
+        predicted_size = data.get("prediction", {}).get("size")
         today_date = datetime.now().strftime("%Y-%m-%d")
+
+        if not recent_issue or not next_issue:
+            return
 
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
 
-        # আগের পেন্ডিং প্রেডিকশন আপডেট করা
+        # পেন্ডিং প্রেডিকশন আপডেট
         c.execute("SELECT predicted_size, status FROM history WHERE issue_number=?", (recent_issue,))
         row = c.fetchone()
-
         if row and row[1] == "PENDING":
             is_win = (row[0] == actual_size)
             status = "WIN 🟢" if is_win else "LOSS 🔴"
@@ -103,7 +108,7 @@ async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
             )
             conn.commit()
 
-        # নতুন প্রেডিকশন ডাটাবেসে সেভ করা
+        # নতুন প্রেডিকশন সেভ
         c.execute("SELECT issue_number FROM history WHERE issue_number=?", (next_issue,))
         if not c.fetchone():
             c.execute(
@@ -116,7 +121,7 @@ async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Background Job Error: {e}")
 
-# স্ট্যাটিস্টিক্স ও প্যাটার্ন জেনারেট করার ফাংশন
+# স্ট্যাটিস্টিক্স ফাংশন
 def get_stats(target_date=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -167,7 +172,7 @@ def get_stats(target_date=None):
         f"Highest Consecutive Losses: `{max_loss_streak}` times"
     )
 
-# /start কমান্ড
+# কমান্ড হ্যান্ডলার
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🎯 Current Prediction", callback_data="current_pred")],
@@ -223,7 +228,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await query.edit_message_text(text="🤖 *Main Menu*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-# নির্দিষ্ট তারিখ দেখার কমান্ড
+# তারিখ চেক কমান্ড
 async def check_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("⚠️ Please provide a date. Example: `/date 2026-10-10`", parse_mode="Markdown")
@@ -232,12 +237,8 @@ async def check_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = get_stats(target_date=target_date)
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-# JS ফাইল আপলোড (এডমিন সীমাবদ্ধতা সহ)
+# JS ফাইল আপলোড হ্যান্ডলার
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("⛔ You are not authorized to update logic.")
-        return
-
     doc = update.message.document
     if doc.file_name and doc.file_name.endswith(".js"):
         file = await context.bot.get_file(doc.file_id)
@@ -252,7 +253,7 @@ def main():
 
     if not os.path.exists(LOGIC_PATH):
         with open(LOGIC_PATH, "w", encoding="utf-8") as f:
-            f.write("// Upload your JS file to overwrite this.\nmodule.exports = { getMarketPrediction: async () => ({}) };")
+            f.write("// Default logic placeholder\nmodule.exports = { getMarketPrediction: async () => ({}) };")
 
     app = Application.builder().token(BOT_TOKEN).build()
 
@@ -261,10 +262,13 @@ def main():
     app.add_handler(CallbackQueryHandler(button))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
-    job_queue = app.job_queue
-    job_queue.run_repeating(check_market_job, interval=10, first=1)
+    # Job Queue কনফিগারেশন
+    if app.job_queue:
+        app.job_queue.run_repeating(check_market_job, interval=10, first=1)
+    else:
+        logger.warning("JobQueue is not initialized! Ensure python-telegram-bot[job-queue] is installed.")
 
-    print(f"Bot is running 24/7. Data directory is set to: {DATA_DIR}")
+    print(f"Bot is starting. Data directory: {DATA_DIR}")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
