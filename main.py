@@ -17,7 +17,7 @@ from telegram.ext import (
 # আপনার বটের টোকেন
 BOT_TOKEN = "8864547814:AAGgeivOOIPFCAltcR8TrOD1p-Wq1xCIe_c"
 
-# Persistent Volume ডিরেক্টরি সেটআপ
+# ডিরেক্টরি পাথ সেটআপ
 DATA_DIR = "/app" if os.path.exists("/app") else "."
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -30,7 +30,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ডাটাবেস সেটআপ (হিস্ট্রি এবং সাবস্ক্রাইবার টেবিল)
+# ডাটাবেস প্রস্তুত করা
 def setup_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -45,7 +45,6 @@ def setup_db():
     conn.commit()
     conn.close()
 
-# সাবস্ক্রাইবার হ্যান্ডলার
 def add_subscriber(chat_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -61,12 +60,182 @@ def get_subscribers():
     conn.close()
     return [r[0] for r in rows]
 
-# জাভাস্ক্রিপ্ট রানার তৈরি
-def create_js_runner():
+# ডিফল্ট logic.js এবং runner.js তৈরি করা (যাতে আপলোড ছাড়াও রান করে)
+def ensure_js_files():
+    default_logic = """
+const WINGO_MARKETS = {
+  "30s": {
+    id: "30s",
+    name: "WinGo 30S",
+    apiUrl: "https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json"
+  }
+};
+
+function resolveColors(number, rawColorStr = "") {
+  if (number === 0) return ["RED", "VIOLET"];
+  if (number === 5) return ["GREEN", "VIOLET"];
+  if ([1, 3, 7, 9].includes(number)) return ["GREEN"];
+  if ([2, 4, 6, 8].includes(number)) return ["RED"];
+  const normalized = String(rawColorStr).toLowerCase();
+  const colors = [];
+  if (normalized.includes("red")) colors.push("RED");
+  if (normalized.includes("green")) colors.push("GREEN");
+  if (normalized.includes("violet")) colors.push("VIOLET");
+  return colors.length > 0 ? colors : ["RED"];
+}
+
+function normalizeDrawRecord(rawItem) {
+  const num = parseInt(rawItem.number, 10);
+  const number = isNaN(num) ? 0 : num;
+  const bigSmall = number >= 5 ? "BIG" : "SMALL";
+  const colors = resolveColors(number, rawItem.color);
+  const issueNumber = String(rawItem.issueNumber || "");
+  return {
+    issueNumber,
+    shortIssue: issueNumber.length >= 5 ? issueNumber.slice(-5) : issueNumber,
+    number,
+    colors,
+    bigSmall
+  };
+}
+
+function computeNextPeriod(currentIssue) {
+  try {
+    return (BigInt(currentIssue) + 1n).toString();
+  } catch {
+    const parsed = parseInt(currentIssue, 10);
+    return isNaN(parsed) ? `${Date.now()}` : (parsed + 1).toString();
+  }
+}
+
+function analyzeDynamicHistory(sizesHistory) {
+  let bestDepth = 0, bigProbability = 0, smallProbability = 0;
+  for (let depth = 6; depth >= 1; depth--) {
+    if (sizesHistory.length < depth + 2) continue;
+    const currentSequence = sizesHistory.slice(0, depth).join("-");
+    let bigMatches = 0, smallMatches = 0;
+    for (let i = 1; i < sizesHistory.length - depth; i++) {
+      const pastSequence = sizesHistory.slice(i, i + depth).join("-");
+      if (currentSequence === pastSequence) {
+        const nextResult = sizesHistory[i - 1]; 
+        if (nextResult === "BIG") bigMatches++;
+        if (nextResult === "SMALL") smallMatches++;
+      }
+    }
+    if (bigMatches > 0 || smallMatches > 0) {
+      bestDepth = depth;
+      const totalMatches = bigMatches + smallMatches;
+      bigProbability = (bigMatches / totalMatches) * 100;
+      smallProbability = (smallMatches / totalMatches) * 100;
+      break;
+    }
+  }
+  return { bestDepth, bigProbability, smallProbability };
+}
+
+function executePredictionModel(history, targetIssue) {
+  const shortIssue = targetIssue.length >= 5 ? targetIssue.slice(-5) : targetIssue;
+  if (!Array.isArray(history) || history.length < 5) {
+    return {
+      targetIssue, shortIssue, predictedSize: "SMALL", predictedColor: "GREEN",
+      recommendedNumbers: [1, 3], confidenceScore: 60.0
+    };
+  }
+
+  const sizes = history.map((item) => item.bigSmall);
+  const lastSize = sizes[0];
+  let predictedSize = "BIG";
+  let confidence = 85.0;
+
+  const dynamicAnalysis = analyzeDynamicHistory(sizes);
+  let streakCount = 1;
+  while (streakCount < sizes.length && sizes[streakCount] === lastSize) {
+    streakCount++;
+  }
+
+  if (dynamicAnalysis.bestDepth >= 2 && Math.abs(dynamicAnalysis.bigProbability - dynamicAnalysis.smallProbability) >= 20) {
+    predictedSize = dynamicAnalysis.bigProbability > dynamicAnalysis.smallProbability ? "BIG" : "SMALL";
+    confidence = Math.max(92.0, 85 + (dynamicAnalysis.bestDepth * 1.5));
+  } else if (streakCount >= 4) {
+    predictedSize = lastSize;
+    confidence = 94.0;
+  } else {
+    const last10Sizes = sizes.slice(0, 10);
+    const bigCount = last10Sizes.filter(s => s === "BIG").length;
+    if (bigCount >= 7) {
+      predictedSize = "SMALL";
+      confidence = 90.0;
+    } else if (bigCount <= 3) {
+      predictedSize = "BIG";
+      confidence = 90.0;
+    } else {
+      predictedSize = lastSize === "BIG" ? "SMALL" : "BIG";
+      confidence = 88.0;
+    }
+  }
+
+  const recentColors = history.slice(0, 5).map(h => h.colors[0]);
+  const isRedDominant = recentColors.filter(c => c === "RED").length > 2;
+  let predictedColor = isRedDominant ? "RED" : "GREEN";
+  if (predictedSize === "BIG" && predictedColor === "GREEN") predictedColor = "RED";
+  if (predictedSize === "SMALL" && predictedColor === "RED") predictedColor = "GREEN";
+
+  let recommendedNumbers = predictedSize === "BIG" ? [6, 8, 7, 9] : [1, 3, 2, 4];
+  recommendedNumbers = recommendedNumbers.slice(0, 2);
+
+  return {
+    targetIssue,
+    shortIssue,
+    predictedSize,
+    predictedColor,
+    recommendedNumbers,
+    confidenceScore: Number(confidence.toFixed(1))
+  };
+}
+
+async function getMarketPrediction() {
+  const market = WINGO_MARKETS["30s"];
+  const response = await fetch(market.apiUrl, {
+    headers: { Accept: "application/json, text/plain, */*" }
+  });
+  if (!response.ok) throw new Error(`API failed: ${response.status}`);
+  const json = await response.json();
+  const rawList = json?.data?.list;
+  if (!Array.isArray(rawList) || rawList.length === 0) throw new Error("No data returned");
+
+  const history = rawList.map(normalizeDrawRecord);
+  const latestDraw = history[0];
+  const targetIssue = computeNextPeriod(latestDraw.issueNumber);
+  const prediction = executePredictionModel(history, targetIssue);
+
+  return {
+    success: true,
+    target: { issueNumber: prediction.targetIssue, shortIssue: prediction.shortIssue },
+    prediction: {
+      size: prediction.predictedSize,
+      color: prediction.predictedColor,
+      recommendedNumbers: prediction.recommendedNumbers,
+      confidenceScore: prediction.confidenceScore
+    },
+    recentContext: {
+      lastIssueNumber: latestDraw.issueNumber,
+      lastDrawnSize: latestDraw.bigSmall,
+      lastDrawnNumber: latestDraw.number
+    }
+  };
+}
+
+module.exports = { getMarketPrediction };
+"""
+    if not os.path.exists(LOGIC_PATH):
+        with open(LOGIC_PATH, "w", encoding="utf-8") as f:
+            f.write(default_logic.strip())
+        logger.info("Default logic.js initialized.")
+
     runner_code = """
 const logic = require('./logic.js');
 if (typeof logic.getMarketPrediction === 'function') {
-    logic.getMarketPrediction('30s')
+    logic.getMarketPrediction()
         .then(res => console.log(JSON.stringify(res)))
         .catch(err => { console.error(err); process.exit(1); });
 } else {
@@ -74,12 +243,10 @@ if (typeof logic.getMarketPrediction === 'function') {
 }
 """
     with open(RUNNER_PATH, "w", encoding="utf-8") as f:
-        f.write(runner_code)
+        f.write(runner_code.strip())
 
-# Node.js দিয়ে JS কোড এক্সিকিউট করা
+# JS এক্সিকিউশন
 def run_js_prediction():
-    if not os.path.exists(LOGIC_PATH):
-        return None
     try:
         result = subprocess.run(
             ["node", "runner.js"],
@@ -91,13 +258,13 @@ def run_js_prediction():
         if result.returncode == 0 and result.stdout.strip():
             return json.loads(result.stdout)
         else:
-            logger.error(f"JS Error: {result.stderr}")
+            logger.error(f"JS Run Error: {result.stderr}")
             return None
     except Exception as e:
-        logger.error(f"Execution Error: {e}")
+        logger.error(f"Subprocess Execution Error: {e}")
         return None
 
-# ব্যাকগ্রাউন্ড জব: প্রতি ৫ সেকেন্ডে মার্কেট ট্র্যাক করবে ও নতুন মেসেজ পাঠাবে
+# ব্যাকগ্রাউন্ড মার্কেট মনিটর জব
 async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
     try:
         data = run_js_prediction()
@@ -121,7 +288,7 @@ async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
 
-        # ১. আগের পেন্ডিং প্রেডিকশন চেক ও WIN/LOSS আপডেট
+        # ১. আগের পেন্ডিং ইস্যু WIN/LOSS যাচাই করা
         c.execute("SELECT predicted_size, status FROM history WHERE issue_number=?", (recent_issue,))
         row = c.fetchone()
 
@@ -136,15 +303,15 @@ async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
             conn.commit()
 
             result_message = (
-                f"📢 *DRAW RESULT*\n"
+                f"📢 *WIN-GO 30s RESULT*\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"🎲 Issue: `{recent_issue}`\n"
-                f"📊 Result: *{actual_size}* (Number: `{actual_num}`)\n"
+                f"📊 Result: *{actual_size}* (No: `{actual_num}`)\n"
                 f"🎯 Predicted Was: *{row[0]}*\n"
-                f"⚡ Verdict: *{status}*"
+                f"⚡ Result Verdict: *{status}*"
             )
 
-        # ২. নতুন প্রেডিকশন ডাটাবেসে সেভ করা
+        # ২. নতুন ইস্যু এন্ট্রি করা
         c.execute("SELECT issue_number FROM history WHERE issue_number=?", (next_issue,))
         next_row = c.fetchone()
 
@@ -158,9 +325,9 @@ async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
 
             nums_str = ", ".join(map(str, recommended_nums)) if recommended_nums else "N/A"
             new_pred_message = (
-                f"🎯 *NEW PREDICTION (WinGo 30s)*\n"
+                f"🎯 *NEW SIGNAL (WinGo 30s)*\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
-                f"🆔 Target Issue: `{next_issue}`\n"
+                f"🆔 Period: `{next_issue}`\n"
                 f"🔮 Prediction: *{predicted_size}*\n"
                 f"🎨 Color: *{predicted_color}*\n"
                 f"🔢 Numbers: `{nums_str}`\n"
@@ -170,7 +337,7 @@ async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
 
         conn.close()
 
-        # ৩. সব ইউজারের কাছে মেসেজ পাঠানো (এডিট ছাড়া সরাসরি নতুন মেসেজ)
+        # ৩. সব ইউজারের কাছে নতুন মেসেজ পাঠানো (ব্রডকাস্ট)
         subscribers = get_subscribers()
         if subscribers:
             broadcast_payload = ""
@@ -190,16 +357,15 @@ async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
                             parse_mode="Markdown",
                         )
                     except Exception as err:
-                        logger.warning(f"Failed to push message to {chat_id}: {err}")
+                        logger.warning(f"Error sending to {chat_id}: {err}")
 
     except Exception as e:
         logger.error(f"Background Job Error: {e}")
 
-# স্ট্যাটিস্টিক্স ফাংশন
+# ব্যাকটেস্ট রিপোর্ট
 def get_stats(target_date=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-
     if target_date:
         c.execute(
             "SELECT status FROM history WHERE status != 'PENDING' AND date=? ORDER BY issue_number ASC",
@@ -218,22 +384,22 @@ def get_stats(target_date=None):
 
     max_win_streak = 0
     max_loss_streak = 0
-    current_win_streak = 0
-    current_loss_streak = 0
+    curr_win = 0
+    curr_loss = 0
 
     for r in results:
         if "WIN" in r[0]:
-            current_win_streak += 1
-            current_loss_streak = 0
-            if current_win_streak > max_win_streak:
-                max_win_streak = current_win_streak
+            curr_win += 1
+            curr_loss = 0
+            if curr_win > max_win_streak:
+                max_win_streak = curr_win
         else:
-            current_loss_streak += 1
-            current_win_streak = 0
-            if current_loss_streak > max_loss_streak:
-                max_loss_streak = current_loss_streak
+            curr_loss += 1
+            curr_win = 0
+            if curr_loss > max_loss_streak:
+                max_loss_streak = curr_loss
 
-    date_label = f"Date: {target_date}" if target_date else "Overall All-Time"
+    date_label = f"Date: {target_date}" if target_date else "All-Time Overall"
 
     return (
         f"📊 *Backtest Statistics ({date_label})*\n\n"
@@ -242,11 +408,11 @@ def get_stats(target_date=None):
         f"🔴 Total Losses: `{losses}`\n"
         f"🏆 Win Rate: `{win_rate:.2f}%`\n\n"
         f"🔥 *Streak Pattern:*\n"
-        f"Highest Consecutive Wins: `{max_win_streak}` times\n"
-        f"Highest Consecutive Losses: `{max_loss_streak}` times"
+        f"Highest Win Streak: `{max_win_streak}` times\n"
+        f"Highest Loss Streak: `{max_loss_streak}` times"
     )
 
-# /start হ্যান্ডলার (ইউজারকে সাবস্ক্রাইবার হিসেবে যুক্ত করে)
+# /start হ্যান্ডলার
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     add_subscriber(chat_id)
@@ -259,18 +425,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     welcome_text = (
-        "🤖 *WinGo 30s Live Prediction Bot Started!*\n\n"
-        "✅ আপনি লাইভ সিগন্যালে যুক্ত হয়েছেন!\n"
-        "এখন থেকে প্রতি ৩০ সেকেন্ড পরপর রেজাল্ট (WIN 🟢 / LOSS 🔴) এবং নতুন প্রেডিকশন আপনার ইনবক্সে নতুন মেসেজ আকারে অটোমেটিক পাঠানো হবে।"
+        "🤖 *WinGo 30s Live Bot Activated!*\n\n"
+        "✅ আপনার আইডি লাইভ সিগন্যালে যুক্ত হয়েছে।\n"
+        "এখন থেকে প্রতি ৩০ সেকেন্ড পরপর ফলাফল এবং নতুন প্রেডিকশন নতুন মেসেজ হিসেবে অটোমেটিক পাঠানো হবে।"
     )
     await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode="Markdown")
 
-    # বর্তমান রানিং প্রেডিকশন সাথে সাথে একবার পাঠানো
+    # ইনস্ট্যান্ট বর্তমান প্রেডিকশন
     data = run_js_prediction()
     if data and "target" in data and "prediction" in data:
         nums_str = ", ".join(map(str, data["prediction"].get("recommendedNumbers", [])))
         instant_msg = (
-            f"🎯 *Current Target Issue:* `{data['target']['issueNumber']}`\n"
+            f"🎯 *Current Target Period:* `{data['target']['issueNumber']}`\n"
             f"🔮 *Prediction:* *{data['prediction']['size']}*\n"
             f"🎨 *Color:* *{data['prediction']['color']}*\n"
             f"🔢 *Numbers:* `{nums_str}`\n"
@@ -286,39 +452,41 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "history_all":
         msg = get_stats(target_date=None)
         await query.message.reply_text(text=msg, parse_mode="Markdown")
-
     elif query.data == "history_today":
         today = datetime.now().strftime("%Y-%m-%d")
         msg = get_stats(target_date=today)
         await query.message.reply_text(text=msg, parse_mode="Markdown")
-
     elif query.data == "history_yesterday":
         yesterday = (datetime.now() - timedelta(1)).strftime("%Y-%m-%d")
         msg = get_stats(target_date=yesterday)
         await query.message.reply_text(text=msg, parse_mode="Markdown")
 
-# নির্দিষ্ট তারিখ দেখার কমান্ড
+# তারিখ চেক
 async def check_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("⚠️ Please provide a date. Example: `/date 2026-10-10`", parse_mode="Markdown")
+        await update.message.reply_text("⚠️ তারিখ উল্লেখ করুন। যেমন: `/date 2026-10-10`", parse_mode="Markdown")
         return
     target_date = context.args[0]
     msg = get_stats(target_date=target_date)
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-# JS ফাইল আপলোড হ্যান্ডলার
+# ফাইল আপলোড হ্যান্ডলার
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     if doc.file_name and doc.file_name.endswith(".js"):
         file = await context.bot.get_file(doc.file_id)
         await file.download_to_drive(LOGIC_PATH)
-        await update.message.reply_text("✅ Success! New JavaScript logic imported. Running 24/7 on new logic.")
+        await update.message.reply_text("✅ নতুন JavaScript লজিক ফাইল সেভ হয়েছে! বট এখন এই লজিকে সিগন্যাল দেবে।")
     else:
-        await update.message.reply_text("⚠️ Please upload a valid `.js` file.")
+        await update.message.reply_text("⚠️ অনুগ্রহ করে একটি বৈধ `.js` ফাইল সেন্ড করুন।")
+
+# এরর হ্যান্ডলার (টেলিগ্রাম এরর লগে প্রিন্ট করবে)
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    logger.error("Exception while handling an update:", exc_info=context.error)
 
 def main():
     setup_db()
-    create_js_runner()
+    ensure_js_files()
 
     app = Application.builder().token(BOT_TOKEN).build()
 
@@ -326,14 +494,14 @@ def main():
     app.add_handler(CommandHandler("date", check_date))
     app.add_handler(CallbackQueryHandler(button))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    app.add_error_handler(error_handler)
 
     if app.job_queue:
-        # প্রতি ৫ সেকেন্ড পরপর ব্যাকগ্রাউন্ডে চেক করবে
         app.job_queue.run_repeating(check_market_job, interval=5, first=1)
     else:
-        logger.warning("JobQueue is not initialized! Ensure python-telegram-bot[job-queue] is installed.")
+        logger.warning("JobQueue পাওয়া যায়নি!")
 
-    print(f"Bot started successfully. Data dir: {DATA_DIR}")
+    print(f"Bot started. Persistent Directory: {DATA_DIR}")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
